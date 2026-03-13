@@ -1,0 +1,259 @@
+{
+  "scenarios": [
+    {
+      "id": "code_assistant",
+      "name": "Code Assistant",
+      "description": "For coding, debugging, architecture, and tests.",
+      "keywords": [
+        "code",
+        "coding",
+        "debug",
+        "bug",
+        "python",
+        "java",
+        "api",
+        "backend",
+        "frontend",
+        "test",
+        "重构",
+        "代码",
+        "调试",
+        "接口",
+        "后端",
+        "前端",
+        "测试"
+      ],
+      "recommended_personality": "professional",
+      "recommended_template": "co-star",
+      "prompt_contract": "Prioritize correctness, reproducibility, and explicit assumptions.",
+      "constraints": [
+        "Prefer deterministic steps",
+        "Provide test strategy",
+        "State edge cases"
+      ]
+    },
+    {
+      "id": "customer_service",
+      "name": "Customer Service",
+      "description": "For customer support and response drafting.",
+      "keywords": [
+        "customer",
+        "support",
+        "ticket",
+        "complaint",
+        "service",
+        "客服",
+        "工单",
+        "投诉",
+        "售后"
+      ],
+      "recommended_personality": "friendly",
+      "recommended_template": "standard",
+      "prompt_contract": "Keep tone stable, empathetic, and policy-compliant.",
+      "constraints": [
+        "Avoid over-promising",
+        "Use clear next steps",
+        "Protect sensitive data"
+      ]
+    },
+    {
+      "id": "content_writer",
+      "name": "Content Writer",
+      "description": "For writing, storytelling, and marketing content.",
+      "keywords": [
+        "blog",
+        "article",
+        "copy",
+        "content",
+        "script",
+        "story",
+        "写作",
+        "文案",
+        "文章",
+        "脚本",
+        "故事",
+        "营销"
+      ],
+      "recommended_personality": "creative",
+      "recommended_template": "langgpt",
+      "prompt_contract": "Optimize for audience fit, voice consistency, and narrative clarity.",
+      "constraints": [
+        "Align with target audience",
+        "Maintain style consistency",
+        "Include concrete examples"
+      ]
+    },
+    {
+      "id": "analyst",
+      "name": "Analyst",
+      "description": "For analysis, reports, and decision support.",
+      "keywords": [
+        "analysis",
+        "report",
+        "metric",
+        "data",
+        "insight",
+        "research",
+        "分析",
+        "报告",
+        "指标",
+        "数据",
+        "洞察",
+        "研究"
+      ],
+      "recommended_personality": "analytical",
+      "recommended_template": "xml",
+      "prompt_contract": "Use evidence-driven structure with traceable reasoning.",
+      "constraints": [
+        "Separate facts from assumptions",
+        "Use structured outputs",
+        "Highlight risks"
+      ]
+    },
+    {
+      "id": "educator",
+      "name": "Educator",
+      "description": "For tutorials, teaching plans, and explanations.",
+      "keywords": [
+        "teach",
+        "tutorial",
+        "lesson",
+        "curriculum",
+        "explain",
+        "教学",
+        "教程",
+        "课程",
+        "讲解",
+        "训练"
+      ],
+      "recommended_personality": "teacher",
+      "recommended_template": "langgpt",
+      "prompt_contract": "Use progressive explanations and adaptive examples.",
+      "constraints": [
+        "Start from fundamentals",
+        "Chunk information",
+        "Check understanding"
+      ]
+    },
+    {
+      "id": "general",
+      "name": "General",
+      "description": "Fallback for mixed or unclear intents.",
+      "keywords": [],
+      "recommended_personality": "professional",
+      "recommended_template": "standard",
+      "prompt_contract": "Balance clarity, completeness, and practical output.",
+      "constraints": [
+        "Keep concise",
+        "Ask for missing inputs when needed"
+      ]
+    }
+  ],
+  "personalities": [
+    {
+      "id": "professional",
+      "name": "Professional",
+      "instruction": "Write in a concise, precise, and execution-focused tone.",
+      "constraints": [
+        "No vague claims",
+        "Prioritize actionable output"
+      ]
+    },
+    {
+      "id": "friendly",
+      "name": "Friendly",
+      "instruction": "Write in a warm, empathetic, and user-friendly tone.",
+      "constraints": [
+        "Acknowledge user context",
+        "Use plain language"
+      ]
+    },
+    {
+      "id": "creative",
+      "name": "Creative",
+      "instruction": "Write with expressive language and fresh framing.",
+      "constraints": [
+        "Preserve coherence",
+        "Avoid cliches"
+      ]
+    },
+    {
+      "id": "analytical",
+      "name": "Analytical",
+      "instruction": "Write with evidence, clear assumptions, and structured logic.",
+      "constraints": [
+        "Show reasoning steps",
+        "Expose uncertainties"
+      ]
+    },
+    {
+      "id": "teacher",
+      "name": "Teacher",
+      "instruction": "Write with educational pacing and scaffolded explanations.",
+      "constraints": [
+        "Use examples",
+        "Progress from basic to advanced"
+      ]
+    }
+  ],
+  "templates": [
+    {
+      "id": "standard",
+      "name": "Standard",
+      "framework": "standard",
+      "output_format_hint": "Markdown sections with bullet points.",
+      "instruction": "Use a balanced role-task-constraints-output structure."
+    },
+    {
+      "id": "langgpt",
+      "name": "LangGPT",
+      "framework": "langgpt",
+      "output_format_hint": "Role/Skills/Rules/Workflow sections.",
+      "instruction": "Emphasize modular capabilities, rules, and workflow."
+    },
+    {
+      "id": "co-star",
+      "name": "CO-STAR",
+      "framework": "co-star",
+      "output_format_hint": "CONTEXT/OBJECTIVE/STYLE/TONE/AUDIENCE/RESPONSE.",
+      "instruction": "Emphasize context, audience, and response controls."
+    },
+    {
+      "id": "xml",
+      "name": "XML",
+      "framework": "xml",
+      "output_format_hint": "Tag-structured XML output.",
+      "instruction": "Use explicit tags for machine readability and parsing."
+    }
+  ],
+  "compatibility_matrix": {
+    "code_assistant": [
+      "co-star",
+      "standard",
+      "xml"
+    ],
+    "customer_service": [
+      "standard",
+      "langgpt"
+    ],
+    "content_writer": [
+      "langgpt",
+      "standard"
+    ],
+    "analyst": [
+      "xml",
+      "co-star",
+      "standard"
+    ],
+    "educator": [
+      "langgpt",
+      "standard"
+    ],
+    "general": [
+      "standard",
+      "langgpt",
+      "co-star",
+      "xml"
+    ]
+  }
+}

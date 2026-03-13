@@ -3,47 +3,172 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PromptForge MVP</title>
+  <title>PromptGo</title>
   <link rel="stylesheet" href="/assets/style.css" />
 </head>
 <body>
-  <div class="bg-glow"></div>
-  <div class="app">
-    <aside class="sidebar">
-      <h1>PromptForge</h1>
-      <p class="sub">苏格拉底式提示词工坊</p>
-      <button id="newConversationBtn" class="primary">+ 新建对话</button>
-      <div class="history-header">历史记录</div>
-      <ul id="historyList" class="history"></ul>
-    </aside>
-
-    <main class="main">
-      <section class="panel chat-panel">
-        <div class="panel-title">对话引导</div>
-
-        <div class="idea-row">
-          <input id="ideaInput" placeholder="先输入你的模糊想法，例如：我想让 AI 帮我写周报" />
-          <button id="startBtn" class="primary">开始</button>
+  <div class="app-shell" id="appShell">
+    <header class="topbar panel">
+      <div class="brand">
+        <div class="brand-logo">PG</div>
+        <div>
+          <div class="brand-title">PromptGo</div>
+          <div class="brand-sub">AI 时代的精神助产术</div>
         </div>
+      </div>
+
+      <div class="top-actions">
+        <button id="newConversationBtn" class="btn ghost">+ 新对话</button>
+        <button id="toggleHistoryBtn" class="btn primary">历史</button>
+        <button id="openSettingsBtn" class="btn icon" aria-label="设置">⚙</button>
+      </div>
+    </header>
+
+    <div class="mobile-tabs panel" id="mobileTabs">
+      <button class="mobile-tab active" data-pane="history">历史</button>
+      <button class="mobile-tab" data-pane="chat">对话</button>
+      <button class="mobile-tab" data-pane="prompt">Prompt</button>
+    </div>
+
+    <div class="workspace" id="workspace">
+      <aside class="history-pane panel" id="historyPane">
+        <div class="pane-title">历史记录</div>
+        <ul id="historyList" class="history-list"></ul>
+      </aside>
+
+      <main class="chat-pane panel" id="chatPane">
+        <div class="pane-title">产婆引导</div>
+
+        <div class="framework-grid" id="frameworkGrid">
+          <button class="framework-card active" data-framework="standard">
+            <div class="framework-name">Standard</div>
+            <div class="framework-desc">角色/任务/约束/输出</div>
+          </button>
+          <button class="framework-card" data-framework="langgpt">
+            <div class="framework-name">LangGPT</div>
+            <div class="framework-desc">Role/Skills/Rules/Workflow</div>
+          </button>
+          <button class="framework-card" data-framework="co-star">
+            <div class="framework-name">CO-STAR</div>
+            <div class="framework-desc">Context/Objective/Style/Audience</div>
+          </button>
+          <button class="framework-card" data-framework="xml">
+            <div class="framework-name">XML</div>
+            <div class="framework-desc">标签化结构输出</div>
+          </button>
+        </div>
+
+        <div class="config-row panel-soft">
+          <div class="config-group">
+            <label for="modeSelect">模式</label>
+            <select id="modeSelect">
+              <option value="auto">Auto</option>
+              <option value="manual">Manual</option>
+            </select>
+          </div>
+          <div class="config-group">
+            <label for="scenarioSelect">场景</label>
+            <select id="scenarioSelect">
+              <option value="auto">Auto</option>
+            </select>
+          </div>
+          <div class="config-group">
+            <label for="personalitySelect">人设</label>
+            <select id="personalitySelect">
+              <option value="">Auto</option>
+            </select>
+          </div>
+          <div class="config-group">
+            <label for="templateSelect">模板</label>
+            <select id="templateSelect">
+              <option value="standard">Standard</option>
+            </select>
+          </div>
+          <div class="config-group verbosity-group">
+            <label for="verbosityInput">详细度 <span id="verbosityValue">5</span></label>
+            <input id="verbosityInput" type="range" min="1" max="10" value="5" />
+          </div>
+        </div>
+
+        <div id="resolvedConfigLabel" class="resolved-config">等待创建会话后显示最终配置</div>
 
         <div id="chatBox" class="chat-box"></div>
 
-        <div class="composer">
-          <input id="answerInput" placeholder="输入你的回答..." />
-          <button id="sendBtn">发送</button>
-          <button id="forceBtn">直接生成</button>
+        <div class="progress-row">
+          <span id="progressLabel">进度 0/0</span>
         </div>
-      </section>
 
-      <section class="panel preview-panel">
-        <div class="panel-title">提示词预览</div>
-        <textarea id="promptEditor" placeholder="完成对话后会在这里生成结构化提示词..."></textarea>
-        <div class="actions">
-          <button id="savePromptBtn">保存编辑</button>
-          <button id="copyPromptBtn" class="primary">一键复制</button>
+        <div class="composer">
+          <textarea id="answerInput" rows="2" placeholder="告诉我你想让 AI 做什么，回车发送，Shift+回车换行..."></textarea>
+          <div class="composer-actions">
+            <button id="sendBtn" class="btn primary">发送</button>
+            <button id="forceBtn" class="btn">直接生成</button>
+          </div>
+        </div>
+      </main>
+
+      <section class="prompt-pane panel" id="promptPane">
+        <div class="pane-title">真理之言</div>
+
+        <div id="promptEmpty" class="prompt-empty">
+          <div class="empty-icon">✦</div>
+          <div>开始对话后，最终 Prompt 会显示在这里</div>
+        </div>
+
+        <pre id="promptReadonly" class="prompt-readonly"></pre>
+        <textarea id="promptEditor" class="prompt-editor hidden" placeholder="在这里编辑最终 Prompt..."></textarea>
+
+        <div class="prompt-actions">
+          <button id="editPromptBtn" class="btn">编辑</button>
+          <button id="savePromptBtn" class="btn hidden">保存</button>
+          <button id="copyPromptBtn" class="btn primary">复制</button>
         </div>
       </section>
-    </main>
+    </div>
+  </div>
+
+  <div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="modal-card panel">
+      <div class="modal-head">
+        <h2 id="settingsTitle">设置</h2>
+        <button id="closeSettingsBtn" class="btn icon" aria-label="关闭">✕</button>
+      </div>
+
+      <label class="field">
+        <span>API Key</span>
+        <input id="apiKeyInput" type="text" placeholder="输入你的 API Key" />
+      </label>
+
+      <label class="field">
+        <span>Base URL</span>
+        <input id="baseUrlInput" type="text" placeholder="https://api.deepseek.com/v1" />
+      </label>
+
+      <label class="field">
+        <span>模型名称</span>
+        <input id="modelInput" type="text" placeholder="deepseek-chat" />
+      </label>
+
+      <label class="field">
+        <span>最大对话轮次</span>
+        <input id="maxTurnsInput" type="number" min="1" max="10" />
+      </label>
+
+      <label class="field">
+        <span>默认框架</span>
+        <select id="defaultFrameworkSelect">
+          <option value="standard">Standard</option>
+          <option value="langgpt">LangGPT</option>
+          <option value="co-star">CO-STAR</option>
+          <option value="xml">XML</option>
+        </select>
+      </label>
+
+      <div class="modal-actions">
+        <button id="cancelSettingsBtn" class="btn">取消</button>
+        <button id="saveSettingsBtn" class="btn primary">保存</button>
+      </div>
+    </div>
   </div>
 
   <script src="/assets/app.js"></script>

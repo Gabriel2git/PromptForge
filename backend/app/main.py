@@ -6,13 +6,15 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse
 
 from app.database.db import init_db
+from app.routers.config_router import router as config_router
 from app.routers.conversations import router as conversations_router
+from app.routers.prompts import router as prompts_router
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 FRONTEND_DIR = BASE_DIR / "frontend"
 
-app = FastAPI(title="PromptForge MVP", version="0.1.0")
+app = FastAPI(title="PromptForge MVP", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,6 +30,8 @@ def startup() -> None:
 
 
 app.include_router(conversations_router)
+app.include_router(config_router)
+app.include_router(prompts_router)
 
 
 @app.get("/")

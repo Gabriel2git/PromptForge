@@ -15,7 +15,8 @@ def next_question(turn: int) -> str:
     return QUESTION_BANK[safe_turn]
 
 
-def should_generate(user_turn_count: int, force_generate: bool = False) -> bool:
+def should_generate(user_turn_count: int, max_turns: int = 5, force_generate: bool = False) -> bool:
     if force_generate:
         return True
-    return user_turn_count >= 5
+    safe_max_turns = max(1, min(int(max_turns), 10))
+    return user_turn_count >= safe_max_turns
