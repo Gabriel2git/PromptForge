@@ -1,0 +1,51 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PromptForge MVP</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <div class="bg-glow"></div>
+  <div class="app">
+    <aside class="sidebar">
+      <h1>PromptForge</h1>
+      <p class="sub">苏格拉底式提示词工坊</p>
+      <button id="newConversationBtn" class="primary">+ 新建对话</button>
+      <div class="history-header">历史记录</div>
+      <ul id="historyList" class="history"></ul>
+    </aside>
+
+    <main class="main">
+      <section class="panel chat-panel">
+        <div class="panel-title">对话引导</div>
+
+        <div class="idea-row">
+          <input id="ideaInput" placeholder="先输入你的模糊想法，例如：我想让 AI 帮我写周报" />
+          <button id="startBtn" class="primary">开始</button>
+        </div>
+
+        <div id="chatBox" class="chat-box"></div>
+
+        <div class="composer">
+          <input id="answerInput" placeholder="输入你的回答..." />
+          <button id="sendBtn">发送</button>
+          <button id="forceBtn">直接生成</button>
+        </div>
+      </section>
+
+      <section class="panel preview-panel">
+        <div class="panel-title">提示词预览</div>
+        <textarea id="promptEditor" placeholder="完成对话后会在这里生成结构化提示词..."></textarea>
+        <div class="actions">
+          <button id="savePromptBtn">保存编辑</button>
+          <button id="copyPromptBtn" class="primary">一键复制</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>
