@@ -1,4 +1,5 @@
-﻿import uuid
+﻿import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -25,23 +26,27 @@ from app.schemas import (
     SettingsResponse,
     SettingsUpdateRequest,
 )
-from app.services.llm_service import client_from_runtime
+from app.services.llm_service import LLMCallError, client_from_runtime
 from app.services.prompt_assembler import apply_profile_to_prompt, build_profile, resolve_conversation_config
 from app.services.prompt_generator import (
     build_prompt,
     merge_generated_prompt,
     merge_generated_prompt_with_fallback,
 )
-from app.services.socratic_engine import next_question, should_generate
+from app.services.socratic_engine import next_assistant_turn, should_generate
 
 router = APIRouter(prefix="/api", tags=["conversations"])
+logger = logging.getLogger(__name__)
+
+
+FALLBACK_REASONS = {"parse_error", "network_error", "timeout", "disabled", "none"}
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _fetch_messages(conversation_id: str):
+def _fetch_messages(conversation_id: str) -> list[MessageItem]:
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT role, content, timestamp FROM messages WHERE conversation_id = ? ORDER BY timestamp",
@@ -63,8 +68,8 @@ def _fetch_prompt_row(conversation_id: str):
 
 
 def _to_qa_pairs(messages: list[MessageItem]) -> list[dict[str, str]]:
-    qa_pairs = []
-    current_q = None
+    qa_pairs: list[dict[str, str]] = []
+    current_q: str | None = None
     for msg in messages:
         if msg.role == "assistant":
             current_q = msg.content
@@ -86,6 +91,122 @@ def _build_profile_hint(resolved_config: dict[str, Any]) -> str:
             profile.get("verbosity_instruction", ""),
         ]
     )
+
+
+def _normalize_fallback_reason(reason: str) -> str:
+    candidate = str(reason or "none").strip().lower()
+    return candidate if candidate in FALLBACK_REASONS else "parse_error"
+
+
+def _sanitize_fallback_detail(detail: str) -> str:
+    raw = str(detail or "").replace("\r", " ").replace("\n", " ").strip()
+    if not raw:
+        return ""
+
+    lowered = raw.lower()
+    if "authorization" in lowered:
+        raw = "Authorization header error"
+
+    # Redact common token patterns.
+    for marker in ["sk-", "Bearer "]:
+        idx = raw.find(marker)
+        if idx >= 0:
+            raw = f"{raw[:idx]}{marker}[REDACTED]"
+
+    if len(raw) > 180:
+        return f"{raw[:180].rstrip()}..."
+    return raw
+
+
+def _attach_turn_meta(assistant_turn: dict[str, Any], source: str, reason: str, detail: str = "") -> dict[str, Any]:
+    normalized_reason = _normalize_fallback_reason(reason)
+    normalized_source = "llm" if source == "llm" else "fallback"
+
+    result = dict(assistant_turn)
+    result["allow_custom"] = True
+    result["custom_label"] = str(result.get("custom_label") or "自定义输入").strip() or "自定义输入"
+    result["turn_source"] = normalized_source
+    result["fallback_reason"] = "none" if normalized_source == "llm" else normalized_reason
+    if normalized_source == "fallback":
+        result["fallback_detail"] = _sanitize_fallback_detail(detail)
+    else:
+        result["fallback_detail"] = ""
+    return result
+
+
+def _coerce_assistant_turn(candidate: Any, fallback_turn: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(candidate, dict):
+        return _attach_turn_meta(fallback_turn, "fallback", "parse_error", "LLM response is not a JSON object")
+
+    question = str(candidate.get("question") or "").strip() or fallback_turn["question"]
+
+    options_raw = candidate.get("options")
+    parsed_options: list[dict[str, str]] = []
+    if isinstance(options_raw, list):
+        for idx, item in enumerate(options_raw[:3]):
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or "").strip()
+            if not label:
+                continue
+            key = str(item.get("key") or f"opt_{idx + 1}").strip() or f"opt_{idx + 1}"
+            parsed_options.append({"key": key, "label": label})
+
+    if len(parsed_options) != 3:
+        parsed_options = fallback_turn["options"]
+
+    payload = {
+        "question": question,
+        "options": parsed_options,
+        "allow_custom": True,
+        "custom_label": str(candidate.get("custom_label") or fallback_turn.get("custom_label") or "自定义输入").strip()
+        or "自定义输入",
+    }
+    return _attach_turn_meta(payload, "llm", "none", "")
+
+
+def _build_fallback_turn(
+    turn_index: int,
+    initial_idea: str,
+    resolved_config: dict[str, Any],
+    reason: str,
+    detail: str = "",
+) -> dict[str, Any]:
+    scenario = resolved_config.get("scenario", "general")
+    base_turn = next_assistant_turn(turn_index, initial_idea=initial_idea, scenario=scenario)
+    return _attach_turn_meta(base_turn, "fallback", reason, detail)
+
+
+def _build_assistant_turn(
+    llm_client,
+    initial_idea: str,
+    qa_pairs: list[dict[str, str]],
+    turn_index: int,
+    framework: str,
+    profile_hint: str,
+    resolved_config: dict[str, Any],
+) -> dict[str, Any]:
+    fallback_turn = _build_fallback_turn(turn_index, initial_idea, resolved_config, "none", "")
+
+    if not llm_client.enabled:
+        return _attach_turn_meta(fallback_turn, "fallback", "disabled", "API key missing")
+
+    try:
+        generated = llm_client.generate_next_turn(
+            initial_idea,
+            qa_pairs,
+            turn_index,
+            framework=framework,
+            profile_hint=profile_hint,
+            retries=2,
+        )
+        return _coerce_assistant_turn(generated, fallback_turn)
+    except LLMCallError as exc:
+        logger.warning("Assistant turn fallback triggered, reason=%s, err=%s", exc.reason, exc)
+        return _attach_turn_meta(fallback_turn, "fallback", exc.reason, str(exc))
+    except Exception as exc:  # defensive fallback
+        logger.exception("Assistant turn fallback triggered by unexpected error: %s", exc)
+        return _attach_turn_meta(fallback_turn, "fallback", "parse_error", str(exc))
 
 
 def _upsert_prompt(conversation_id: str, framework: str, prompt_payload: dict[str, Any]) -> dict[str, str]:
@@ -248,18 +369,16 @@ def create_conversation(payload: ConversationCreateRequest):
     }
 
     llm_client = client_from_runtime(runtime_config)
-    initial_question = next_question(0)
-    if llm_client.enabled:
-        try:
-            initial_question = llm_client.generate_next_question(
-                payload.initial_idea,
-                [],
-                0,
-                framework=resolved_config["framework"],
-                profile_hint=_build_profile_hint(resolved_config),
-            )
-        except Exception:
-            initial_question = next_question(0)
+    assistant_turn = _build_assistant_turn(
+        llm_client,
+        payload.initial_idea,
+        [],
+        0,
+        resolved_config["framework"],
+        _build_profile_hint(resolved_config),
+        resolved_config,
+    )
+    initial_question = assistant_turn["question"]
 
     with get_conn() as conn:
         conn.execute(
@@ -312,6 +431,7 @@ def create_conversation(payload: ConversationCreateRequest):
         "max_turns": max_turns,
         "resolved_config": resolved_config,
         "assistant_message": initial_question,
+        "assistant_turn": assistant_turn,
     }
 
 
@@ -356,7 +476,8 @@ def append_message(conversation_id: str, payload: MessageCreateRequest):
                         user_answers,
                         framework=framework,
                     )
-            except Exception:
+            except Exception as exc:
+                logger.warning("generate_structured_prompt failed, using local build_prompt fallback: %s", exc)
                 structured = build_prompt(convo["initial_idea"], user_answers, framework=framework)
 
         structured = apply_profile_to_prompt(structured, framework, resolved_config)
@@ -372,19 +493,16 @@ def append_message(conversation_id: str, payload: MessageCreateRequest):
             "generated_prompt": structured,
         }
 
-    question = next_question(len(user_answers))
-    if llm_client.enabled:
-        try:
-            qa_pairs = _to_qa_pairs(messages)
-            question = llm_client.generate_next_question(
-                convo["initial_idea"],
-                qa_pairs,
-                len(user_answers),
-                framework=framework,
-                profile_hint=profile_hint,
-            )
-        except Exception:
-            question = next_question(len(user_answers))
+    assistant_turn = _build_assistant_turn(
+        llm_client,
+        convo["initial_idea"],
+        _to_qa_pairs(messages),
+        len(user_answers),
+        framework,
+        profile_hint,
+        resolved_config,
+    )
+    question = assistant_turn["question"]
 
     with get_conn() as conn:
         conn.execute(
@@ -404,6 +522,7 @@ def append_message(conversation_id: str, payload: MessageCreateRequest):
         "max_turns": max_turns,
         "resolved_config": resolved_config,
         "assistant_message": question,
+        "assistant_turn": assistant_turn,
     }
 
 
@@ -434,7 +553,8 @@ def refine_prompt(conversation_id: str, payload: PromptRefineRequest):
             )
             if isinstance(generated, dict):
                 refined = merge_generated_prompt_with_fallback(generated, current_prompt, framework)
-        except Exception:
+        except Exception as exc:
+            logger.warning("refine_structured_prompt failed, using local refine fallback: %s", exc)
             refined = _fallback_refine(current_prompt, payload.instruction, framework)
 
     refined = apply_profile_to_prompt(refined, framework, resolved_config)
@@ -480,22 +600,24 @@ def rethink_question(conversation_id: str, payload: RethinkRequest):
     user_answers = [m.content for m in messages if m.role == "user"]
     turn_index = len(user_answers)
 
-    question = f"换个角度：{next_question(turn_index)}"
-    if llm_client.enabled:
-        try:
-            qa_pairs = _to_qa_pairs(messages)
-            full_hint = profile_hint
-            if payload.hint.strip():
-                full_hint = f"{full_hint} | user_hint={payload.hint.strip()}"
-            question = llm_client.generate_next_question(
-                convo["initial_idea"],
-                qa_pairs,
-                turn_index,
-                framework=framework,
-                profile_hint=full_hint,
-            )
-        except Exception:
-            question = f"换个角度：{next_question(turn_index)}"
+    rethink_hint = payload.hint.strip()
+    if rethink_hint:
+        profile_hint = f"{profile_hint} | rethink_hint={rethink_hint}"
+
+    assistant_turn = _build_assistant_turn(
+        llm_client,
+        convo["initial_idea"],
+        _to_qa_pairs(messages),
+        turn_index,
+        framework,
+        profile_hint,
+        resolved_config,
+    )
+
+    question = assistant_turn["question"]
+    if not question.startswith("换个角度"):
+        question = f"换个角度：{question}"
+        assistant_turn["question"] = question
 
     with get_conn() as conn:
         conn.execute(
@@ -515,6 +637,7 @@ def rethink_question(conversation_id: str, payload: RethinkRequest):
         "max_turns": max_turns,
         "resolved_config": resolved_config,
         "assistant_message": question,
+        "assistant_turn": assistant_turn,
     }
 
 

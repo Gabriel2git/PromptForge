@@ -1,4 +1,8 @@
 ﻿import json
+import logging
+import re
+import socket
+import time
 from typing import Any, Dict, List
 from urllib import error, request
 
@@ -9,6 +13,19 @@ from app.config import (
     DEEPSEEK_TIMEOUT_SECONDS,
 )
 from app.services.prompt_generator import normalize_framework
+
+logger = logging.getLogger(__name__)
+
+MODEL_ALIASES = {
+    "deepseek-v3.2": "deepseek-chat",
+    "deepseek-v3": "deepseek-chat",
+}
+
+
+class LLMCallError(RuntimeError):
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
 
 
 class DeepSeekClient:
@@ -21,7 +38,8 @@ class DeepSeekClient:
     ) -> None:
         self.api_key = api_key.strip()
         self.base_url = (base_url or DEEPSEEK_BASE_URL).rstrip("/")
-        self.model = (model or DEEPSEEK_MODEL).strip()
+        raw_model = (model or DEEPSEEK_MODEL).strip()
+        self.model = MODEL_ALIASES.get(raw_model.lower(), raw_model)
         self.timeout = float(timeout)
 
     @property
@@ -30,7 +48,7 @@ class DeepSeekClient:
 
     def _chat(self, messages: List[Dict[str, str]], temperature: float = 0.3) -> str:
         if not self.enabled:
-            raise RuntimeError("DeepSeek API key is missing")
+            raise LLMCallError("disabled", "DeepSeek API key is missing")
 
         payload = {
             "model": self.model,
@@ -51,11 +69,95 @@ class DeepSeekClient:
         try:
             with request.urlopen(req, timeout=self.timeout) as resp:
                 raw = resp.read().decode("utf-8")
+        except error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="ignore")
+            except Exception:
+                detail = ""
+            message = f"DeepSeek HTTP error {exc.code}: {detail[:240]}".strip()
+            raise LLMCallError("network_error", message) from exc
+        except socket.timeout as exc:
+            raise LLMCallError("timeout", f"DeepSeek request timed out: {exc}") from exc
+        except TimeoutError as exc:
+            raise LLMCallError("timeout", f"DeepSeek request timed out: {exc}") from exc
         except error.URLError as exc:
-            raise RuntimeError(f"DeepSeek request failed: {exc}") from exc
+            if isinstance(exc.reason, socket.timeout):
+                raise LLMCallError("timeout", f"DeepSeek request timed out: {exc}") from exc
+            raise LLMCallError("network_error", f"DeepSeek request failed: {exc}") from exc
 
-        parsed = json.loads(raw)
-        return parsed["choices"][0]["message"]["content"].strip()
+        try:
+            parsed = json.loads(raw)
+            return str(parsed["choices"][0]["message"]["content"]).strip()
+        except Exception as exc:
+            raise LLMCallError("network_error", "DeepSeek response payload is invalid") from exc
+
+    def _parse_json_response(self, raw: str) -> Dict[str, Any]:
+        cleaned = raw.strip()
+
+        fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", cleaned, flags=re.IGNORECASE | re.DOTALL)
+        if fenced:
+            cleaned = fenced.group(1).strip()
+
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                return parsed
+            raise ValueError("JSON root must be an object")
+        except Exception:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start == -1 or end <= start:
+                raise
+            parsed = json.loads(cleaned[start : end + 1])
+            if not isinstance(parsed, dict):
+                raise ValueError("JSON root must be an object")
+            return parsed
+
+    def _normalize_turn_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        question = str(payload.get("question") or "").strip()
+        if not question:
+            raise ValueError("Missing question")
+
+        options_raw = payload.get("options")
+        if not isinstance(options_raw, list):
+            raise ValueError("Missing options list")
+
+        options: List[Dict[str, str]] = []
+        for idx, item in enumerate(options_raw[:3]):
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or "").strip()
+            if not label:
+                continue
+            key = str(item.get("key") or f"opt_{idx + 1}").strip() or f"opt_{idx + 1}"
+            options.append({"key": key, "label": label})
+
+        if len(options) != 3:
+            raise ValueError("Options must contain exactly 3 valid items")
+
+        custom_label = str(payload.get("custom_label") or "自定义输入").strip() or "自定义输入"
+        return {
+            "question": question,
+            "options": options,
+            "allow_custom": True,
+            "custom_label": custom_label,
+        }
+
+    def _retry_delays(self, retries: int) -> List[float]:
+        if retries <= 0:
+            return []
+        base = [0.3, 0.6]
+        if retries <= len(base):
+            return base[:retries]
+        extra = [base[-1] * (idx + 1) for idx in range(retries - len(base))]
+        return base + extra
+
+    def _compact_error_text(self, exc: Exception, max_len: int = 140) -> str:
+        text = str(exc).replace("\r", " ").replace("\n", " ").strip()
+        if len(text) > max_len:
+            return f"{text[:max_len].rstrip()}..."
+        return text
 
     def generate_next_question(
         self,
@@ -65,40 +167,119 @@ class DeepSeekClient:
         framework: str = "standard",
         profile_hint: str = "",
     ) -> str:
-        context = "\n".join(
-            [f"Q: {item['question']}\nA: {item['answer']}" for item in qa_pairs]
-        ) or "暂无历史问答"
-
+        context = "\n".join([f"Q: {item['question']}\nA: {item['answer']}" for item in qa_pairs]) or "No history"
         style = normalize_framework(framework)
-        style_hint = {
-            "standard": "使用通用结构化提问风格",
-            "langgpt": "提问时突出角色、规则、流程等信息缺口",
-            "co-star": "提问时突出上下文、目标、受众与输出风格",
-            "xml": "提问时注意未来输出的标签化结构需求",
-        }[style]
-
-        hint_text = f"\n上下文提示: {profile_hint}" if profile_hint else ""
+        hint_text = f"\nProfile hint: {profile_hint}" if profile_hint else ""
 
         messages = [
             {
                 "role": "system",
-                "content": "你是苏格拉底式提问助手。每次仅输出一个中文问题，20-60字，聚焦澄清需求，不要输出解释。",
+                "content": "You are a Socratic assistant. Output one concise Chinese question only.",
             },
             {
                 "role": "user",
                 "content": (
-                    f"用户初始想法: {initial_idea}\n"
-                    f"当前轮次: 第{turn_index + 1}轮\n"
-                    f"框架偏好: {style}\n"
-                    f"提问提示: {style_hint}\n"
-                    f"已有问答:\n{context}{hint_text}\n"
-                    "请给出下一条最关键的问题。"
+                    f"Initial idea: {initial_idea}\n"
+                    f"Turn: {turn_index + 1}\n"
+                    f"Framework: {style}\n"
+                    f"History:\n{context}{hint_text}\n"
+                    "Return the next best clarification question in Chinese."
                 ),
             },
         ]
 
         question = self._chat(messages, temperature=0.4)
-        return question.replace("\n", " ").strip(" ？?") + "？"
+        compact = question.replace("\n", " ").strip(" ?？")
+        return f"{compact}？" if compact else "你希望最终达成什么目标？"
+
+    def generate_next_turn(
+        self,
+        initial_idea: str,
+        qa_pairs: List[Dict[str, str]],
+        turn_index: int,
+        framework: str = "standard",
+        profile_hint: str = "",
+        retries: int = 2,
+    ) -> Dict[str, Any]:
+        context = "\n".join([f"Q: {item['question']}\nA: {item['answer']}" for item in qa_pairs]) or "No history"
+        style = normalize_framework(framework)
+
+        schema_hint = {
+            "question": "string",
+            "options": [
+                {"key": "opt_1", "label": "string"},
+                {"key": "opt_2", "label": "string"},
+                {"key": "opt_3", "label": "string"},
+            ],
+            "allow_custom": True,
+            "custom_label": "自定义输入",
+        }
+
+        hint_text = f"\nProfile hint: {profile_hint}" if profile_hint else ""
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You must return strict JSON only. "
+                    "No markdown, no explanation. "
+                    "Question and option labels must be Chinese."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Initial idea: {initial_idea}\n"
+                    f"Turn: {turn_index + 1}\n"
+                    f"Framework: {style}\n"
+                    f"History:\n{context}{hint_text}\n"
+                    f"Generate one Chinese question and exactly 3 selectable options with JSON schema: {json.dumps(schema_hint, ensure_ascii=False)}"
+                ),
+            },
+        ]
+
+        safe_retries = max(0, int(retries))
+        delays = self._retry_delays(safe_retries)
+        total_attempts = safe_retries + 1
+        last_reason = "parse_error"
+        last_detail = "LLM returned non-JSON content"
+
+        for attempt in range(total_attempts):
+            raw_preview = ""
+            try:
+                raw = self._chat(messages, temperature=0.35)
+                raw_preview = raw.replace("\r", " ").replace("\n", " ").strip()
+                parsed = self._parse_json_response(raw)
+                return self._normalize_turn_payload(parsed)
+            except LLMCallError as exc:
+                last_reason = exc.reason
+                last_detail = self._compact_error_text(exc)
+                logger.warning(
+                    "generate_next_turn call failed (attempt %s/%s, reason=%s): %s",
+                    attempt + 1,
+                    total_attempts,
+                    last_reason,
+                    exc,
+                )
+                if exc.reason == "disabled":
+                    raise
+            except Exception as exc:
+                last_reason = "parse_error"
+                preview_suffix = ""
+                if raw_preview:
+                    clipped = self._compact_error_text(Exception(raw_preview), max_len=90)
+                    preview_suffix = f" | raw={clipped}"
+                last_detail = f"Invalid JSON from LLM: {self._compact_error_text(exc)}{preview_suffix}"
+                logger.warning(
+                    "generate_next_turn parse failed (attempt %s/%s): %s",
+                    attempt + 1,
+                    total_attempts,
+                    exc,
+                )
+
+            if attempt < safe_retries:
+                time.sleep(delays[attempt])
+
+        raise LLMCallError(last_reason, last_detail)
 
     def generate_structured_prompt(
         self,
@@ -116,7 +297,7 @@ class DeepSeekClient:
                 "required": True,
                 "type": "text|code|data|query|document",
                 "description": "string",
-                "placeholder": "{{用户输入}}",
+                "placeholder": "{{user_input}}",
             },
             "constraints": ["string"],
             "output_format": "string",
@@ -128,39 +309,22 @@ class DeepSeekClient:
             "raw_text": "string",
         }
 
-        framework_hint = {
-            "standard": "raw_text 使用标准分节结构",
-            "langgpt": "raw_text 使用 Role/Skills/Rules/Workflow 风格",
-            "co-star": "raw_text 使用 CONTEXT/OBJECTIVE/STYLE/TONE/AUDIENCE/RESPONSE",
-            "xml": "raw_text 使用 XML 标签结构",
-        }[style]
-
-        hint_text = f"\n风格配置提示: {profile_hint}" if profile_hint else ""
-
+        hint_text = f"\nStyle hint: {profile_hint}" if profile_hint else ""
         messages = [
-            {
-                "role": "system",
-                "content": "你是提示词工程专家。仅返回 JSON，不要使用 markdown 代码块，不要额外解释。",
-            },
+            {"role": "system", "content": "You are a prompt engineer. Return JSON only."},
             {
                 "role": "user",
                 "content": (
-                    f"用户初始想法: {initial_idea}\n"
-                    f"澄清回答:\n{answer_text}\n"
-                    f"框架: {style}\n"
-                    f"格式提示: {framework_hint}{hint_text}\n\n"
-                    f"请基于以下结构输出 JSON: {json.dumps(schema_hint, ensure_ascii=False)}"
+                    f"Initial idea: {initial_idea}\n"
+                    f"Answers:\n{answer_text}\n"
+                    f"Framework: {style}{hint_text}\n"
+                    f"Return JSON following: {json.dumps(schema_hint, ensure_ascii=False)}"
                 ),
             },
         ]
 
         raw = self._chat(messages, temperature=0.2)
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.strip("`")
-            cleaned = cleaned.replace("json", "", 1).strip()
-        result = json.loads(cleaned)
-        return result
+        return self._parse_json_response(raw)
 
     def refine_structured_prompt(
         self,
@@ -176,7 +340,7 @@ class DeepSeekClient:
                 "required": True,
                 "type": "text|code|data|query|document",
                 "description": "string",
-                "placeholder": "{{用户输入}}",
+                "placeholder": "{{user_input}}",
             },
             "constraints": ["string"],
             "output_format": "string",
@@ -188,31 +352,22 @@ class DeepSeekClient:
             "raw_text": "string",
         }
 
-        hint_text = f"\n配置提示: {profile_hint}" if profile_hint else ""
-
+        hint_text = f"\nConfig hint: {profile_hint}" if profile_hint else ""
         messages = [
-            {
-                "role": "system",
-                "content": "你是 Prompt 优化专家。根据用户优化意图改写结构化 Prompt。只返回 JSON。",
-            },
+            {"role": "system", "content": "You refine prompts. Return JSON only."},
             {
                 "role": "user",
                 "content": (
-                    f"当前 Prompt(JSON): {json.dumps(current_prompt, ensure_ascii=False)}\n"
-                    f"优化意图: {instruction}\n"
-                    f"框架: {normalize_framework(framework)}{hint_text}\n"
-                    f"输出 JSON 结构: {json.dumps(schema_hint, ensure_ascii=False)}"
+                    f"Current prompt: {json.dumps(current_prompt, ensure_ascii=False)}\n"
+                    f"Instruction: {instruction}\n"
+                    f"Framework: {normalize_framework(framework)}{hint_text}\n"
+                    f"Return JSON following: {json.dumps(schema_hint, ensure_ascii=False)}"
                 ),
             },
         ]
 
         raw = self._chat(messages, temperature=0.25)
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.strip("`")
-            cleaned = cleaned.replace("json", "", 1).strip()
-        result = json.loads(cleaned)
-        return result
+        return self._parse_json_response(raw)
 
 
 def client_from_runtime(runtime_config: Dict[str, Any] | None) -> DeepSeekClient:

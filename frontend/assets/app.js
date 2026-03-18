@@ -10,13 +10,18 @@ const state = {
   promptEditing: false,
   promptOptions: null,
   resolvedConfig: null,
+  activeSelection: null,
 };
+
+let historyContextMenu = null;
+let historyContextTarget = null;
 
 const el = {
   appShell: document.getElementById("appShell"),
   historyList: document.getElementById("historyList"),
   chatBox: document.getElementById("chatBox"),
   answerInput: document.getElementById("answerInput"),
+  customInputHint: document.getElementById("customInputHint"),
   promptEmpty: document.getElementById("promptEmpty"),
   promptReadonly: document.getElementById("promptReadonly"),
   promptEditor: document.getElementById("promptEditor"),
@@ -60,7 +65,7 @@ const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ initial_idea, framework, config }),
     });
-    if (!res.ok) throw new Error("创建会话失败");
+    if (!res.ok) throw new Error("Create conversation failed");
     return res.json();
   },
 
@@ -70,19 +75,25 @@ const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content, force_generate }),
     });
-    if (!res.ok) throw new Error("发送消息失败");
+    if (!res.ok) throw new Error("Send message failed");
     return res.json();
   },
 
   async listConversations() {
     const res = await fetch("/api/conversations");
-    if (!res.ok) throw new Error("加载历史失败");
+    if (!res.ok) throw new Error("Load history failed");
     return res.json();
   },
 
   async getConversation(conversationId) {
     const res = await fetch(`/api/conversations/${conversationId}`);
-    if (!res.ok) throw new Error("读取会话失败");
+    if (!res.ok) throw new Error("Read conversation failed");
+    return res.json();
+  },
+
+  async deleteConversation(conversationId) {
+    const res = await fetch(`/api/conversations/${conversationId}`, { method: "DELETE" });
+    if (!res.ok) throw new Error("Delete conversation failed");
     return res.json();
   },
 
@@ -92,13 +103,13 @@ const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ raw_text }),
     });
-    if (!res.ok) throw new Error("保存失败");
+    if (!res.ok) throw new Error("Save prompt failed");
     return res.json();
   },
 
   async getSettings() {
     const res = await fetch("/api/settings");
-    if (!res.ok) throw new Error("读取设置失败");
+    if (!res.ok) throw new Error("Load settings failed");
     return res.json();
   },
 
@@ -108,23 +119,19 @@ const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    if (!res.ok) throw new Error("保存设置失败");
+    if (!res.ok) throw new Error("Save settings failed");
     return res.json();
   },
 
   async getPromptOptions() {
     const res = await fetch("/api/config/prompt-options");
-    if (!res.ok) throw new Error("读取 Prompt 配置失败");
+    if (!res.ok) throw new Error("Load prompt options failed");
     return res.json();
   },
 };
 
 function normalizeFramework(value) {
-  const mapping = {
-    structured: "xml",
-    costar: "co-star",
-    co_star: "co-star",
-  };
+  const mapping = { structured: "xml", costar: "co-star", co_star: "co-star" };
   const candidate = mapping[String(value || "standard").toLowerCase()] || String(value || "standard").toLowerCase();
   return FRAMEWORK_OPTIONS.includes(candidate) ? candidate : "standard";
 }
@@ -159,8 +166,127 @@ function addMessage(role, content) {
   el.chatBox.scrollTop = el.chatBox.scrollHeight;
 }
 
+function clearActiveSelection() {
+  if (!state.activeSelection) return;
+  if (state.activeSelection.confirmBtn) state.activeSelection.confirmBtn.disabled = true;
+  state.activeSelection = null;
+}
+
+function buildSelectionContent(selectedLabels, customInput) {
+  const labels = (selectedLabels || []).map((item) => String(item || "").trim()).filter(Boolean);
+  const custom = String(customInput || "").trim();
+
+  if (!labels.length && !custom) return "";
+  const parts = [];
+  if (labels.length) parts.push(`已选项：${labels.join("；")}`);
+  if (custom) parts.push(`补充：${custom}`);
+  return parts.join("\n");
+}
+
+function syncActiveSelectionState() {
+  if (!state.activeSelection || !state.activeSelection.confirmBtn) return;
+  const selectedCount = state.activeSelection.selected.size;
+  const customText = String(el.answerInput?.value || "").trim();
+  state.activeSelection.confirmBtn.disabled = selectedCount < 1 && !customText;
+}
+
+function addAssistantTurn(turn) {
+  if (!turn || !Array.isArray(turn.options) || turn.options.length < 1) return;
+  clearActiveSelection();
+
+  const card = document.createElement("div");
+  card.className = "assistant-turn";
+
+  const title = document.createElement("div");
+  title.className = "assistant-turn-title";
+  title.textContent = "请选择一个或多个选项，确认后进入下一轮。";
+  card.appendChild(title);
+
+  const source = String(turn.turn_source || "llm").toLowerCase();
+  const reason = String(turn.fallback_reason || "none").toLowerCase();
+  if (source === "fallback") {
+    const status = document.createElement("div");
+    status.className = "assistant-turn-status fallback";
+    const detail = String(turn.fallback_detail || "").trim();
+    status.textContent = detail
+      ? `当前为回退模式（${reason}）：${detail}`
+      : `当前为回退模式（${reason}）`;
+    card.appendChild(status);
+  }
+
+  const options = document.createElement("div");
+  options.className = "assistant-turn-options";
+  const selected = new Set();
+
+  turn.options.slice(0, 3).forEach((item) => {
+    const btn = document.createElement("button");
+    btn.className = "assistant-option-btn";
+    btn.type = "button";
+    btn.textContent = item.label;
+    btn.onclick = () => {
+      const label = String(item.label || "").trim();
+      if (!label) return;
+
+      if (selected.has(label)) selected.delete(label);
+      else selected.add(label);
+
+      btn.classList.toggle("selected", selected.has(label));
+      syncActiveSelectionState();
+    };
+    options.appendChild(btn);
+  });
+
+  const actionRow = document.createElement("div");
+  actionRow.className = "assistant-turn-actions";
+
+  if (turn.allow_custom !== false) {
+    const custom = document.createElement("button");
+    custom.className = "assistant-option-btn custom";
+    custom.type = "button";
+    custom.textContent = turn.custom_label || "自定义输入";
+    custom.onclick = () => {
+      if (el.customInputHint) el.customInputHint.classList.remove("hidden");
+      el.answerInput.focus();
+    };
+    actionRow.appendChild(custom);
+  }
+
+  const confirm = document.createElement("button");
+  confirm.className = "assistant-confirm-btn";
+  confirm.type = "button";
+  confirm.textContent = "确认选择";
+  confirm.disabled = true;
+  confirm.onclick = async () => {
+    const payload = buildSelectionContent(Array.from(selected), el.answerInput.value);
+    if (!payload) return;
+
+    try {
+      await submitAnswer(payload, false);
+      confirm.disabled = true;
+      selected.clear();
+      options.querySelectorAll(".assistant-option-btn.selected").forEach((node) => node.classList.remove("selected"));
+      clearActiveSelection();
+    } catch (err) {
+      alert(err.message || "Send failed");
+    }
+  };
+  actionRow.appendChild(confirm);
+
+  state.activeSelection = { selected, confirmBtn: confirm };
+  syncActiveSelectionState();
+
+  card.appendChild(options);
+  card.appendChild(actionRow);
+  el.chatBox.appendChild(card);
+  el.chatBox.scrollTop = el.chatBox.scrollHeight;
+}
 function clearChat() {
+  clearActiveSelection();
   el.chatBox.innerHTML = "";
+}
+
+function hideCustomHint() {
+  if (el.customInputHint) el.customInputHint.classList.add("hidden");
 }
 
 function updateProgress() {
@@ -231,16 +357,95 @@ function formatDate(raw) {
   return date.toLocaleString("zh-CN", { hour12: false, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+function ensureHistoryContextMenu() {
+  if (historyContextMenu) return;
+
+  const menu = document.createElement("div");
+  menu.className = "history-context-menu hidden";
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.type = "button";
+  deleteBtn.className = "history-context-menu-btn danger";
+  deleteBtn.textContent = "\u5220\u9664";
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "history-context-menu-btn";
+  cancelBtn.textContent = "\u53d6\u6d88";
+
+  menu.appendChild(deleteBtn);
+  menu.appendChild(cancelBtn);
+  menu.addEventListener("click", (event) => event.stopPropagation());
+
+  deleteBtn.onclick = async () => {
+    if (!historyContextTarget) return;
+    const targetId = historyContextTarget.id;
+    closeHistoryContextMenu();
+
+    try {
+      await api.deleteConversation(targetId);
+      if (state.conversationId === targetId) resetComposerForNewConversation();
+      await refreshHistory();
+    } catch (err) {
+      alert(err.message || "Delete failed");
+    }
+  };
+
+  cancelBtn.onclick = () => closeHistoryContextMenu();
+
+  document.body.appendChild(menu);
+  historyContextMenu = menu;
+}
+
+function openHistoryContextMenu(event, item) {
+  ensureHistoryContextMenu();
+  historyContextTarget = item;
+
+  historyContextMenu.classList.remove("hidden");
+  historyContextMenu.style.left = "0px";
+  historyContextMenu.style.top = "0px";
+
+  const menuWidth = historyContextMenu.offsetWidth || 160;
+  const menuHeight = historyContextMenu.offsetHeight || 90;
+  const margin = 8;
+
+  const left = Math.min(event.clientX, window.innerWidth - menuWidth - margin);
+  const top = Math.min(event.clientY, window.innerHeight - menuHeight - margin);
+
+  historyContextMenu.style.left = `${Math.max(margin, left)}px`;
+  historyContextMenu.style.top = `${Math.max(margin, top)}px`;
+}
+
+function closeHistoryContextMenu() {
+  if (!historyContextMenu) return;
+  historyContextMenu.classList.add("hidden");
+  historyContextTarget = null;
+}
+
 function renderHistory(items) {
   el.historyList.innerHTML = "";
   items.forEach((item) => {
     const li = document.createElement("li");
     li.className = "history-item";
-    li.innerHTML = `
-      <div class="history-item-title">${item.initial_idea.slice(0, 42)}</div>
-      <div class="history-item-meta">${item.status === "completed" ? "已完成" : "进行中"} · ${item.current_turn}/${item.max_turns} · ${item.scenario || "general"} · ${formatDate(item.created_at)}</div>
-    `;
+
+    const title = document.createElement("div");
+    title.className = "history-item-title";
+    title.textContent = String(item.initial_idea || "").slice(0, 42);
+
+    const meta = document.createElement("div");
+    meta.className = "history-item-meta";
+    const statusLabel = item.status === "completed" ? "已完成" : "进行中";
+    meta.textContent = `${statusLabel} · ${item.current_turn}/${item.max_turns} · ${item.scenario || "general"} · ${formatDate(item.created_at)}`;
+
+    li.appendChild(title);
+    li.appendChild(meta);
     li.onclick = () => loadConversation(item.id);
+    li.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openHistoryContextMenu(event, item);
+    });
+
     el.historyList.appendChild(li);
   });
 }
@@ -279,9 +484,7 @@ function populatePromptOptions(options) {
     el.templateSelect.appendChild(opt);
   });
 
-  if (!el.templateSelect.value) {
-    el.templateSelect.value = state.framework;
-  }
+  if (!el.templateSelect.value) el.templateSelect.value = state.framework;
 }
 
 function collectConversationConfig() {
@@ -298,15 +501,9 @@ function collectConversationConfig() {
 function applyResolvedConfigToControls(config) {
   if (!config) return;
   el.modeSelect.value = config.mode || "auto";
-  if ([...el.scenarioSelect.options].some((opt) => opt.value === config.scenario)) {
-    el.scenarioSelect.value = config.scenario;
-  }
-  if ([...el.personalitySelect.options].some((opt) => opt.value === config.personality)) {
-    el.personalitySelect.value = config.personality;
-  }
-  if ([...el.templateSelect.options].some((opt) => opt.value === normalizeTemplate(config.template))) {
-    el.templateSelect.value = normalizeTemplate(config.template);
-  }
+  if ([...el.scenarioSelect.options].some((opt) => opt.value === config.scenario)) el.scenarioSelect.value = config.scenario;
+  if ([...el.personalitySelect.options].some((opt) => opt.value === config.personality)) el.personalitySelect.value = config.personality;
+  if ([...el.templateSelect.options].some((opt) => opt.value === normalizeTemplate(config.template))) el.templateSelect.value = normalizeTemplate(config.template);
   el.verbosityInput.value = Number(config.verbosity || 5);
   el.verbosityValue.textContent = String(el.verbosityInput.value);
 }
@@ -316,6 +513,7 @@ function resetComposerForNewConversation() {
   state.currentTurn = 0;
   state.maxTurns = 0;
   clearChat();
+  hideCustomHint();
   setPrompt("");
   setResolvedConfigLabel(null);
   setConfigControlsDisabled(false);
@@ -341,7 +539,10 @@ async function createConversationFromIdea(initialIdea) {
   state.currentTurn = data.current_turn || 1;
 
   clearChat();
+  hideCustomHint();
+  addMessage("user", initialIdea);
   addMessage("assistant", data.assistant_message);
+  addAssistantTurn(data.assistant_turn);
   setFrameworkUI();
   updateProgress();
   setPrompt("");
@@ -359,13 +560,11 @@ async function loadConversation(conversationId) {
   state.currentTurn = data.current_turn || 0;
 
   clearChat();
+  hideCustomHint();
   data.messages.forEach((msg) => addMessage(msg.role, msg.content));
 
-  if (data.generated_prompt?.raw_text) {
-    setPrompt(data.generated_prompt.raw_text);
-  } else {
-    setPrompt("");
-  }
+  if (data.generated_prompt?.raw_text) setPrompt(data.generated_prompt.raw_text);
+  else setPrompt("");
 
   setResolvedConfigLabel(data.resolved_config || null);
   applyResolvedConfigToControls(data.resolved_config || null);
@@ -374,20 +573,17 @@ async function loadConversation(conversationId) {
   setFrameworkUI();
   updateProgress();
 
-  if (isTabletOrMobile()) {
-    el.appShell.classList.remove("history-open");
-  }
-  if (isMobile()) {
-    setMobilePane("chat");
-  }
+  if (isTabletOrMobile()) el.appShell.classList.remove("history-open");
+  if (isMobile()) setMobilePane("chat");
 }
 
-async function sendAnswer(forceGenerate = false) {
-  const text = el.answerInput.value.trim();
+async function submitAnswer(content, forceGenerate = false) {
+  const text = String(content || "").trim();
 
   if (!state.conversationId) {
     if (!text) return;
     el.answerInput.value = "";
+    hideCustomHint();
     await createConversationFromIdea(text);
 
     if (!forceGenerate) return;
@@ -399,9 +595,10 @@ async function sendAnswer(forceGenerate = false) {
     setResolvedConfigLabel(data.resolved_config || state.resolvedConfig);
 
     if (data.completed) {
+      clearActiveSelection();
       state.currentTurn = state.maxTurns;
       setPrompt(data.generated_prompt?.raw_text || "");
-      addMessage("assistant", "已完成信息收集，结构化 Prompt 已生成。你可以在右侧编辑。");
+      addMessage("assistant", "已完成信息收集，结构化 Prompt 已生成。你可以在右侧继续编辑。");
       await refreshHistory();
     }
 
@@ -409,20 +606,22 @@ async function sendAnswer(forceGenerate = false) {
     return;
   }
 
-  const content = text || (forceGenerate ? "请直接生成" : "");
-  if (!content) return;
+  if (!text && !forceGenerate) return;
+  const finalContent = text || "请直接生成";
 
-  addMessage("user", content);
+  addMessage("user", finalContent);
   el.answerInput.value = "";
+  hideCustomHint();
 
-  const data = await api.sendMessage(state.conversationId, content, forceGenerate);
+  const data = await api.sendMessage(state.conversationId, finalContent, forceGenerate);
   state.maxTurns = data.max_turns || state.maxTurns;
   setResolvedConfigLabel(data.resolved_config || state.resolvedConfig);
 
   if (data.completed) {
+    clearActiveSelection();
     state.currentTurn = state.maxTurns;
     setPrompt(data.generated_prompt?.raw_text || "");
-    addMessage("assistant", "已完成信息收集，结构化 Prompt 已生成。你可以在右侧编辑。");
+    addMessage("assistant", "已完成信息收集，结构化 Prompt 已生成。你可以在右侧继续编辑。");
     await refreshHistory();
     updateProgress();
     return;
@@ -430,7 +629,20 @@ async function sendAnswer(forceGenerate = false) {
 
   state.currentTurn = data.current_turn || state.currentTurn;
   addMessage("assistant", data.assistant_message);
+  addAssistantTurn(data.assistant_turn);
   updateProgress();
+}
+
+async function sendAnswer(forceGenerate = false) {
+  if (!forceGenerate && state.activeSelection) {
+    const selectedLabels = Array.from(state.activeSelection.selected || []);
+    const merged = buildSelectionContent(selectedLabels, el.answerInput.value);
+    if (merged) {
+      await submitAnswer(merged, false);
+      return;
+    }
+  }
+  await submitAnswer(el.answerInput.value, forceGenerate);
 }
 
 async function savePrompt() {
@@ -439,14 +651,14 @@ async function savePrompt() {
   if (!content) return;
   await api.updatePrompt(state.conversationId, content);
   setPrompt(content);
-  alert("已保存");
+  alert("Saved");
 }
 
 async function copyPrompt() {
   const content = state.promptEditing ? el.promptEditor.value : state.currentPrompt;
   if (!content.trim()) return;
   await navigator.clipboard.writeText(content);
-  alert("已复制到剪贴板");
+  alert("Copied");
 }
 
 function fillSettingsForm(settings) {
@@ -463,7 +675,7 @@ function readSettingsForm() {
 
   return {
     api_key: el.apiKeyInput.value.trim(),
-    base_url: el.baseUrlInput.value.trim() || "https://api.deepseek.com/v1",
+    base_url: el.baseUrlInput.value.trim() || "https://api.deepseek.com",
     model: el.modelInput.value.trim() || "deepseek-chat",
     max_turns: maxTurns,
     default_framework: normalizeFramework(el.defaultFrameworkSelect.value),
@@ -501,9 +713,7 @@ async function loadSettings() {
     state.maxTurns = settings.max_turns;
     setFrameworkUI();
     updateProgress();
-    if (!el.templateSelect.value) {
-      el.templateSelect.value = state.framework;
-    }
+    if (!el.templateSelect.value) el.templateSelect.value = state.framework;
   }
 
   fillSettingsForm(settings);
@@ -538,23 +748,21 @@ function bindEvents() {
       }
 
       closeSettingsModal();
-      alert("设置已保存");
+      alert("Settings saved");
     } catch (err) {
-      alert(err.message || "保存设置失败");
+      alert(err.message || "Save failed");
     }
   };
 
   el.settingsModal.addEventListener("click", (event) => {
-    if (event.target === el.settingsModal) {
-      closeSettingsModal();
-    }
+    if (event.target === el.settingsModal) closeSettingsModal();
   });
 
   el.sendBtn.onclick = async () => {
     try {
       await sendAnswer(false);
     } catch (err) {
-      alert(err.message || "发送失败");
+      alert(err.message || "Send failed");
     }
   };
 
@@ -562,21 +770,24 @@ function bindEvents() {
     try {
       await sendAnswer(true);
     } catch (err) {
-      alert(err.message || "生成失败");
+      alert(err.message || "Generate failed");
     }
   };
 
   el.answerInput.addEventListener("keydown", async (event) => {
-    if (event.key !== "Enter") return;
-    if (event.shiftKey) return;
-    if (event.isComposing) return;
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
     event.preventDefault();
 
     try {
       await sendAnswer(false);
     } catch (err) {
-      alert(err.message || "发送失败");
+      alert(err.message || "Send failed");
     }
+  });
+
+  el.answerInput.addEventListener("input", () => {
+    if (el.answerInput.value.trim()) hideCustomHint();
+    syncActiveSelectionState();
   });
 
   el.editPromptBtn.onclick = () => setPromptEditing(true);
@@ -584,21 +795,21 @@ function bindEvents() {
     try {
       await savePrompt();
     } catch (err) {
-      alert(err.message || "保存失败");
+      alert(err.message || "Save failed");
     }
   };
   el.copyPromptBtn.onclick = async () => {
     try {
       await copyPrompt();
     } catch (err) {
-      alert(err.message || "复制失败");
+      alert(err.message || "Copy failed");
     }
   };
 
   el.frameworkGrid.querySelectorAll(".framework-card").forEach((btn) => {
     btn.onclick = () => {
       if (state.conversationId) {
-        alert("当前会话框架已固定。请新建对话后切换框架。");
+        alert("Current conversation is locked. Please create a new conversation to switch framework.");
         return;
       }
       state.framework = normalizeFramework(btn.dataset.framework);
@@ -631,6 +842,13 @@ function bindEvents() {
     if (!isTabletOrMobile()) {
       el.appShell.classList.remove("history-open");
     }
+    closeHistoryContextMenu();
+  });
+
+  document.addEventListener("click", () => closeHistoryContextMenu());
+  document.addEventListener("scroll", () => closeHistoryContextMenu(), true);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeHistoryContextMenu();
   });
 }
 
@@ -645,8 +863,9 @@ async function bootstrap() {
     await refreshHistory();
     resetComposerForNewConversation();
   } catch (err) {
-    alert(err.message || "初始化失败");
+    alert(err.message || "Initialization failed");
   }
 }
 
 bootstrap();
+

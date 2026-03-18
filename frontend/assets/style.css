@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   --bg: #eef2f8;
   --panel: #f8fafc;
   --line: #d8e0ec;
@@ -331,6 +331,139 @@ select {
 .msg.user {
   margin-left: auto;
   background: var(--user);
+}
+
+
+
+.assistant-turn {
+  border: 1px dashed #c4d4ea;
+  border-radius: 12px;
+  background: #f8fbff;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.assistant-turn-title {
+  color: #4b5563;
+  font-size: 0.82rem;
+  margin-bottom: 8px;
+}
+
+.assistant-turn-status {
+  margin-bottom: 8px;
+  font-size: 0.8rem;
+  padding: 6px 8px;
+  border-radius: 9px;
+}
+
+.assistant-turn-status.fallback {
+  color: #9a3412;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+}
+
+.assistant-turn-options {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.assistant-option-btn {
+  border: 1px solid #c5d5ec;
+  background: #fff;
+  color: #1f2937;
+  border-radius: 10px;
+  text-align: left;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.assistant-option-btn:hover {
+  border-color: #0a66e8;
+  background: #f3f8ff;
+}
+
+.assistant-option-btn.selected {
+  border-color: #0a66e8;
+  background: #eaf3ff;
+  color: #0b3f94;
+  font-weight: 600;
+}
+
+.assistant-option-btn.custom {
+  border-style: dashed;
+}
+
+.assistant-turn-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.assistant-confirm-btn {
+  border: 1px solid #0a66e8;
+  background: #0a66e8;
+  color: #fff;
+  border-radius: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.assistant-confirm-btn:hover:not(:disabled) {
+  background: #0954c0;
+  border-color: #0954c0;
+}
+
+.assistant-confirm-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.custom-input-hint {
+  margin-bottom: 6px;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  color: #0f4db8;
+  background: #ecf3ff;
+  border: 1px solid #bfd3f3;
+  border-radius: 10px;
+}
+
+
+
+.history-context-menu {
+  position: fixed;
+  z-index: 30;
+  min-width: 148px;
+  padding: 6px;
+  border: 1px solid #c9d6e9;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 12px 28px rgba(16, 24, 40, 0.18);
+}
+
+.history-context-menu-btn {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: #1f2937;
+  text-align: left;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.history-context-menu-btn:hover {
+  background: #f2f6fd;
+}
+
+.history-context-menu-btn.danger {
+  color: #c1272d;
+}
+
+.history-context-menu-btn.danger:hover {
+  background: #fff1f1;
 }
 
 .progress-row {

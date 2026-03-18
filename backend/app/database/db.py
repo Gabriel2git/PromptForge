@@ -1,4 +1,4 @@
-﻿import json
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -124,6 +124,26 @@ def save_app_settings(conn: sqlite3.Connection, payload: dict[str, Any]) -> dict
     return settings
 
 
+def cleanup_question_mark_conversations(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT id
+        FROM conversations
+        WHERE LENGTH(TRIM(initial_idea)) >= 3
+          AND REPLACE(REPLACE(TRIM(initial_idea), '?', ''), CHAR(65311), '') = ''
+        """
+    ).fetchall()
+
+    ids = [row["id"] for row in rows]
+    if not ids:
+        return
+
+    placeholders = ",".join(["?"] * len(ids))
+    conn.execute(f"DELETE FROM messages WHERE conversation_id IN ({placeholders})", ids)
+    conn.execute(f"DELETE FROM prompts WHERE conversation_id IN ({placeholders})", ids)
+    conn.execute(f"DELETE FROM conversations WHERE id IN ({placeholders})", ids)
+
+
 def init_db() -> None:
     with get_conn() as conn:
         conn.execute(
@@ -206,7 +226,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS app_settings (
                 id INTEGER PRIMARY KEY CHECK(id = 1),
                 api_key TEXT NOT NULL DEFAULT '',
-                base_url TEXT NOT NULL DEFAULT 'https://api.deepseek.com/v1',
+                base_url TEXT NOT NULL DEFAULT 'https://api.deepseek.com',
                 model TEXT NOT NULL DEFAULT 'deepseek-chat',
                 max_turns INTEGER NOT NULL DEFAULT 5,
                 default_framework TEXT NOT NULL DEFAULT 'standard',
@@ -216,6 +236,7 @@ def init_db() -> None:
         )
 
         save_app_settings(conn, fetch_app_settings(conn))
+        cleanup_question_mark_conversations(conn)
 
 
 def json_dumps(payload: Any) -> str:
