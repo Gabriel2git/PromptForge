@@ -169,11 +169,12 @@ def _build_fallback_turn(
     turn_index: int,
     initial_idea: str,
     resolved_config: dict[str, Any],
+    qa_pairs: list[dict[str, str]],
     reason: str,
     detail: str = "",
 ) -> dict[str, Any]:
     scenario = resolved_config.get("scenario", "general")
-    base_turn = next_assistant_turn(turn_index, initial_idea=initial_idea, scenario=scenario)
+    base_turn = next_assistant_turn(turn_index, initial_idea=initial_idea, scenario=scenario, qa_pairs=qa_pairs)
     return _attach_turn_meta(base_turn, "fallback", reason, detail)
 
 
@@ -186,7 +187,7 @@ def _build_assistant_turn(
     profile_hint: str,
     resolved_config: dict[str, Any],
 ) -> dict[str, Any]:
-    fallback_turn = _build_fallback_turn(turn_index, initial_idea, resolved_config, "none", "")
+    fallback_turn = _build_fallback_turn(turn_index, initial_idea, resolved_config, qa_pairs, "none", "")
 
     if not llm_client.enabled:
         return _attach_turn_meta(fallback_turn, "fallback", "disabled", "API key missing")
@@ -458,7 +459,16 @@ def append_message(conversation_id: str, payload: MessageCreateRequest):
     messages = _fetch_messages(conversation_id)
     user_answers = [m.content for m in messages if m.role == "user"]
 
-    if should_generate(len(user_answers), max_turns=max_turns, force_generate=payload.force_generate):
+    qa_pairs = _to_qa_pairs(messages)
+
+    if should_generate(
+        len(user_answers),
+        max_turns=max_turns,
+        force_generate=payload.force_generate,
+        qa_pairs=qa_pairs,
+        initial_idea=convo["initial_idea"],
+        scenario=resolved_config.get("scenario", "general"),
+    ):
         structured = build_prompt(convo["initial_idea"], user_answers, framework=framework)
 
         if llm_client.enabled:
@@ -496,7 +506,7 @@ def append_message(conversation_id: str, payload: MessageCreateRequest):
     assistant_turn = _build_assistant_turn(
         llm_client,
         convo["initial_idea"],
-        _to_qa_pairs(messages),
+        qa_pairs,
         len(user_answers),
         framework,
         profile_hint,

@@ -199,7 +199,11 @@ function addAssistantTurn(turn) {
 
   const title = document.createElement("div");
   title.className = "assistant-turn-title";
-  title.textContent = "请选择一个或多个选项，确认后进入下一轮。";
+  const slotTitle = String(turn.slot_title || "").trim();
+  const stage = String(turn.stage || "coverage").toLowerCase();
+  title.textContent = slotTitle
+    ? `${stage === "refine" ? "继续完善" : "当前补齐"}：${slotTitle}`
+    : "请选择一个或多个选项，确认后进入下一轮。";
   card.appendChild(title);
 
   const source = String(turn.turn_source || "llm").toLowerCase();
@@ -306,7 +310,7 @@ function setResolvedConfigLabel(config) {
   }
 
   const confidence = Number(config.confidence || 0).toFixed(2);
-  el.resolvedConfigLabel.textContent = `最终配置：模式 ${config.mode} | 场景 ${config.scenario} | 人设 ${config.personality} | 模板 ${config.template} | 框架 ${config.framework} | 置信度 ${confidence}`;
+  el.resolvedConfigLabel.textContent = `最终配置：模式 ${config.mode} | 场景 ${config.scenario} | 人设 ${config.personality} | 输出协议 ${config.template} | 框架 ${config.framework} | 置信度 ${confidence}`;
 }
 
 function setConfigControlsDisabled(disabled) {
