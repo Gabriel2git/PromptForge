@@ -3,6 +3,8 @@
 const state = {
   conversationId: null,
   currentPrompt: "",
+  currentPromptStruct: null,
+  promptView: "spec",
   framework: "standard",
   maxTurns: 0,
   currentTurn: 0,
@@ -23,6 +25,11 @@ const el = {
   answerInput: document.getElementById("answerInput"),
   customInputHint: document.getElementById("customInputHint"),
   promptEmpty: document.getElementById("promptEmpty"),
+  promptViewTabs: document.getElementById("promptViewTabs"),
+  promptSpecPanel: document.getElementById("promptSpecPanel"),
+  specCoverage: document.getElementById("specCoverage"),
+  promptSpecGrid: document.getElementById("promptSpecGrid"),
+  promptRawPanel: document.getElementById("promptRawPanel"),
   promptReadonly: document.getElementById("promptReadonly"),
   promptEditor: document.getElementById("promptEditor"),
   progressLabel: document.getElementById("progressLabel"),
@@ -269,7 +276,10 @@ function addAssistantTurn(turn) {
       confirm.disabled = true;
       selected.clear();
       options.querySelectorAll(".assistant-option-btn.selected").forEach((node) => node.classList.remove("selected"));
-      clearActiveSelection();
+      // Only clear the global selection state if this card is still the active one.
+      if (state.activeSelection?.confirmBtn === confirm) {
+        clearActiveSelection();
+      }
     } catch (err) {
       alert(err.message || "Send failed");
     }
@@ -319,32 +329,120 @@ function setConfigControlsDisabled(disabled) {
   });
 }
 
+function _specItemsFromPrompt(promptStruct) {
+  if (!promptStruct || typeof promptStruct !== "object") return [];
+
+  const constraints = Array.isArray(promptStruct.constraints)
+    ? promptStruct.constraints.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+
+  const items = [
+    { key: "role", title: "角色定义", value: String(promptStruct.role || "").trim() },
+    { key: "goal", title: "任务目标", value: String(promptStruct.task || "").trim() },
+    {
+      key: "audience",
+      title: "输入/场景",
+      value: String(promptStruct.input_spec?.description || "").trim(),
+    },
+    { key: "constraints", title: "限制条件", value: constraints.join("\n") },
+    { key: "output", title: "输出形式", value: String(promptStruct.output_format || "").trim() },
+    { key: "fallback", title: "缺失处理", value: String(promptStruct.error_handling || "").trim() },
+  ];
+
+  return items.filter((item) => item.value);
+}
+
+function renderPromptSpec(promptStruct) {
+  const items = _specItemsFromPrompt(promptStruct);
+  el.promptSpecGrid.innerHTML = "";
+
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "prompt-spec-empty";
+    empty.textContent = "当前无结构化对象可展示。";
+    el.promptSpecGrid.appendChild(empty);
+    el.specCoverage.textContent = "结构化槽位覆盖：0/5";
+    return;
+  }
+
+  const coverageKeys = new Set(items.map((item) => item.key));
+  const coverage = ["goal", "audience", "constraints", "output", "fallback"].filter((key) => coverageKeys.has(key)).length;
+  el.specCoverage.textContent = `结构化槽位覆盖：${coverage}/5`;
+
+  items.forEach((item) => {
+    const card = document.createElement("div");
+    card.className = "prompt-spec-card";
+
+    const title = document.createElement("div");
+    title.className = "prompt-spec-title";
+    title.textContent = item.title;
+
+    const value = document.createElement("div");
+    value.className = "prompt-spec-value";
+    value.textContent = item.value;
+
+    card.appendChild(title);
+    card.appendChild(value);
+    el.promptSpecGrid.appendChild(card);
+  });
+}
+
+function setPromptView(view) {
+  const hasPrompt = Boolean(state.currentPrompt.trim());
+  const hasSpec = Boolean(state.currentPromptStruct && typeof state.currentPromptStruct === "object");
+
+  const safeView = view === "raw" ? "raw" : "spec";
+  state.promptView = safeView === "spec" && !hasSpec ? "raw" : safeView;
+
+  el.promptViewTabs.classList.toggle("hidden", !hasPrompt);
+  el.promptSpecPanel.classList.toggle("hidden", !hasPrompt || state.promptView !== "spec" || !hasSpec);
+  el.promptRawPanel.classList.toggle("hidden", !hasPrompt || state.promptView !== "raw");
+
+  el.promptViewTabs.querySelectorAll(".prompt-view-tab").forEach((node) => {
+    node.classList.toggle("active", node.dataset.view === state.promptView);
+  });
+}
+
 function setPromptEditing(editing) {
   const canEdit = Boolean(state.conversationId && state.currentPrompt.trim());
   state.promptEditing = editing && canEdit;
 
-  el.promptReadonly.classList.toggle("hidden", state.promptEditing || !canEdit);
+  if (state.promptEditing) {
+    setPromptView("raw");
+  }
+
+  el.promptReadonly.classList.toggle("hidden", state.promptEditing || !canEdit || state.promptView !== "raw");
   el.promptEditor.classList.toggle("hidden", !state.promptEditing);
   el.editPromptBtn.classList.toggle("hidden", state.promptEditing || !canEdit);
   el.savePromptBtn.classList.toggle("hidden", !state.promptEditing);
 }
 
-function setPrompt(content) {
-  state.currentPrompt = content || "";
+function setPromptData(payload) {
+  const promptStruct = payload && typeof payload === "object" ? payload : null;
+  state.currentPromptStruct = promptStruct;
+  state.currentPrompt = promptStruct ? String(promptStruct.raw_text || "") : String(payload || "");
+
   el.promptReadonly.textContent = state.currentPrompt;
   el.promptEditor.value = state.currentPrompt;
+  renderPromptSpec(promptStruct);
 
   const hasPrompt = Boolean(state.currentPrompt.trim());
   el.promptEmpty.classList.toggle("hidden", hasPrompt);
+  el.copyPromptBtn.classList.toggle("hidden", !hasPrompt);
   if (!hasPrompt) {
+    state.currentPromptStruct = null;
     el.promptReadonly.classList.add("hidden");
     el.promptEditor.classList.add("hidden");
+    el.promptRawPanel.classList.add("hidden");
+    el.promptSpecPanel.classList.add("hidden");
+    el.promptViewTabs.classList.add("hidden");
     el.editPromptBtn.classList.add("hidden");
     el.savePromptBtn.classList.add("hidden");
     state.promptEditing = false;
     return;
   }
 
+  setPromptView(promptStruct ? "spec" : "raw");
   setPromptEditing(false);
 }
 
@@ -518,7 +616,7 @@ function resetComposerForNewConversation() {
   state.maxTurns = 0;
   clearChat();
   hideCustomHint();
-  setPrompt("");
+  setPromptData("");
   setResolvedConfigLabel(null);
   setConfigControlsDisabled(false);
   el.answerInput.value = "";
@@ -549,7 +647,7 @@ async function createConversationFromIdea(initialIdea) {
   addAssistantTurn(data.assistant_turn);
   setFrameworkUI();
   updateProgress();
-  setPrompt("");
+  setPromptData("");
   setResolvedConfigLabel(data.resolved_config || null);
   applyResolvedConfigToControls(data.resolved_config || null);
   setConfigControlsDisabled(true);
@@ -567,8 +665,8 @@ async function loadConversation(conversationId) {
   hideCustomHint();
   data.messages.forEach((msg) => addMessage(msg.role, msg.content));
 
-  if (data.generated_prompt?.raw_text) setPrompt(data.generated_prompt.raw_text);
-  else setPrompt("");
+  if (data.generated_prompt?.raw_text) setPromptData(data.generated_prompt);
+  else setPromptData("");
 
   setResolvedConfigLabel(data.resolved_config || null);
   applyResolvedConfigToControls(data.resolved_config || null);
@@ -601,7 +699,7 @@ async function submitAnswer(content, forceGenerate = false) {
     if (data.completed) {
       clearActiveSelection();
       state.currentTurn = state.maxTurns;
-      setPrompt(data.generated_prompt?.raw_text || "");
+      setPromptData(data.generated_prompt || { raw_text: data.generated_prompt?.raw_text || "" });
       addMessage("assistant", "已完成信息收集，结构化 Prompt 已生成。你可以在右侧继续编辑。");
       await refreshHistory();
     }
@@ -624,7 +722,7 @@ async function submitAnswer(content, forceGenerate = false) {
   if (data.completed) {
     clearActiveSelection();
     state.currentTurn = state.maxTurns;
-    setPrompt(data.generated_prompt?.raw_text || "");
+    setPromptData(data.generated_prompt || { raw_text: data.generated_prompt?.raw_text || "" });
     addMessage("assistant", "已完成信息收集，结构化 Prompt 已生成。你可以在右侧继续编辑。");
     await refreshHistory();
     updateProgress();
@@ -654,7 +752,10 @@ async function savePrompt() {
   const content = el.promptEditor.value.trim();
   if (!content) return;
   await api.updatePrompt(state.conversationId, content);
-  setPrompt(content);
+  const merged = state.currentPromptStruct && typeof state.currentPromptStruct === "object"
+    ? { ...state.currentPromptStruct, raw_text: content }
+    : { raw_text: content };
+  setPromptData(merged);
   alert("Saved");
 }
 
@@ -830,6 +931,15 @@ function bindEvents() {
     if (state.conversationId) return;
     state.framework = normalizeFramework(el.templateSelect.value);
     setFrameworkUI();
+  });
+
+  el.promptViewTabs.querySelectorAll(".prompt-view-tab").forEach((btn) => {
+    btn.onclick = () => {
+      const nextView = btn.dataset.view === "raw" ? "raw" : "spec";
+      if (nextView === "spec" && !state.currentPromptStruct) return;
+      setPromptView(nextView);
+      if (nextView === "spec") setPromptEditing(false);
+    };
   });
 
   el.mobileTabs.querySelectorAll(".mobile-tab").forEach((btn) => {

@@ -13,7 +13,7 @@
         <div class="brand-logo">PF</div>
         <div>
           <div class="brand-title">PromptForge</div>
-          <div class="brand-sub">AI 时代的精神助产术</div>
+          <div class="brand-sub">AI 时代的需求澄清引导</div>
         </div>
       </div>
 
@@ -37,7 +37,7 @@
       </aside>
 
       <main class="chat-pane panel" id="chatPane">
-        <div class="pane-title">产婆引导</div>
+        <div class="pane-title">澄清引导</div>
 
         <div class="framework-grid" id="frameworkGrid">
           <button class="framework-card active" data-framework="standard">
@@ -108,15 +108,27 @@
       </main>
 
       <section class="prompt-pane panel" id="promptPane">
-        <div class="pane-title">真理之言</div>
+        <div class="pane-title">Prompt 输出</div>
+
+        <div class="prompt-view-tabs hidden" id="promptViewTabs">
+          <button class="prompt-view-tab active" data-view="spec" type="button">结构化面板</button>
+          <button class="prompt-view-tab" data-view="raw" type="button">Raw Text</button>
+        </div>
 
         <div id="promptEmpty" class="prompt-empty">
           <div class="empty-icon">✦</div>
           <div>开始对话后，最终 Prompt 会显示在这里</div>
         </div>
 
-        <pre id="promptReadonly" class="prompt-readonly"></pre>
-        <textarea id="promptEditor" class="prompt-editor hidden" placeholder="在这里编辑最终 Prompt..."></textarea>
+        <div id="promptSpecPanel" class="prompt-spec-panel hidden">
+          <div id="specCoverage" class="spec-coverage"></div>
+          <div id="promptSpecGrid" class="prompt-spec-grid"></div>
+        </div>
+
+        <div id="promptRawPanel" class="prompt-raw-panel hidden">
+          <pre id="promptReadonly" class="prompt-readonly"></pre>
+          <textarea id="promptEditor" class="prompt-editor hidden" placeholder="在这里编辑最终 Prompt..."></textarea>
+        </div>
 
         <div class="prompt-actions">
           <button id="editPromptBtn" class="btn">编辑</button>
